@@ -25,14 +25,19 @@
 
 -export([start_link/2]).
 
-%% PubSub
--export([
-    subscribe/1,
-    subscribe/2,
-    subscribe/3
-]).
+%% Connect
+% -export([ save_weight/2 
+%         , get_weight/1
+%         , remove_weight/1]).
 
--export([unsubscribe/1]).
+%% PubSub
+-export([ subscribe/1
+        , subscribe/2
+        , subscribe/4
+        ]).
+
+%-export([unsubscribe/1]).
+-export([unsubscribe/2]).
 
 -export([subscriber_down/1]).
 
@@ -84,6 +89,7 @@
 -define(SUBOPTION, emqx_suboption).
 -define(SUBSCRIBER, emqx_subscriber).
 -define(SUBSCRIPTION, emqx_subscription).
+-define(SUBWEIGHT, emqx_subweight).
 
 %% Guards
 -define(IS_SUBID(Id), (is_binary(Id) orelse is_atom(Id))).
@@ -109,6 +115,9 @@ create_tabs() ->
     %% SubOption: {SubPid, Topic} -> SubOption
     ok = emqx_tables:new(?SUBOPTION, [set | TabOpts]),
 
+    %% SubWeight : SubPid -> Weight
+    ok = emqx_tables:new(?SUBWEIGHT, [set | TabOpts]),
+
     %% Subscription: SubPid -> Topic1, Topic2, Topic3, ...
     %% duplicate_bag: o(1) insert
     ok = emqx_tables:new(?SUBSCRIPTION, [duplicate_bag | TabOpts]),
@@ -119,30 +128,35 @@ create_tabs() ->
 
 %%------------------------------------------------------------------------------
 %% Subscribe API
+%
+%   ovo ide posle session
 %%------------------------------------------------------------------------------
 
 -spec subscribe(emqx_types:topic()) -> ok.
 subscribe(Topic) when is_binary(Topic) ->
     subscribe(Topic, undefined).
 
--spec subscribe(emqx_types:topic(), emqx_types:subid() | emqx_types:subopts()) -> ok.
+%%%%%%%%%%%%%%%%%%%%%%%%%%% TODO sta sa ovim
+-spec(subscribe(emqx_types:topic(), emqx_types:subid() | emqx_types:subopts()) -> ok).
 subscribe(Topic, SubId) when is_binary(Topic), ?IS_SUBID(SubId) ->
-    subscribe(Topic, SubId, ?DEFAULT_SUBOPTS);
+    subscribe(Topic, SubId, ?DEFAULT_SUBOPTS, undefined);
 subscribe(Topic, SubOpts) when is_binary(Topic), is_map(SubOpts) ->
-    subscribe(Topic, undefined, SubOpts).
-
--spec subscribe(emqx_types:topic(), emqx_types:subid(), emqx_types:subopts()) -> ok.
-subscribe(Topic, SubId, SubOpts0) when is_binary(Topic), ?IS_SUBID(SubId), is_map(SubOpts0) ->
+    subscribe(Topic, undefined, SubOpts, undefined).
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%
+%%% ovo ide posle session
+-spec(subscribe(emqx_types:topic(), emqx_types:subid(), emqx_types:subopts(), emqx_types:weight()) -> ok).
+subscribe(Topic, SubId, SubOpts0, Weight) when is_binary(Topic), ?IS_SUBID(SubId), is_map(SubOpts0) ->
     SubOpts = maps:merge(?DEFAULT_SUBOPTS, SubOpts0),
-    _ = emqx_trace:subscribe(Topic, SubId, SubOpts),
+    _ = emqx_trace:subscribe(Topic, SubId, SubOpts, Weight),
     SubPid = self(),
     case ets:member(?SUBOPTION, {SubPid, Topic}) of
         %% New
         false ->
             ok = emqx_broker_helper:register_sub(SubPid, SubId),
-            do_subscribe(Topic, SubPid, with_subid(SubId, SubOpts));
-        %% Existed
-        true ->
+            do_subscribe(Topic, SubPid, Weight, with_subid(SubId, SubOpts));
+        true -> %% Existed
+            ?SLOG(debug, #{msg => "IMAAAAAAAAA U SUBOPTIONNNNNNNNNNNNNNNNNNNNNNNN"}),
             set_subopts(SubPid, Topic, with_subid(SubId, SubOpts)),
             %% ensure to return 'ok'
             ok
@@ -155,12 +169,13 @@ with_subid(SubId, SubOpts) ->
     maps:put(subid, SubId, SubOpts).
 
 %% @private
-do_subscribe(Topic, SubPid, SubOpts) ->
+%%%%%% TODO: STA OVDE?
+do_subscribe(Topic, SubPid, _Weight, SubOpts) ->
     true = ets:insert(?SUBSCRIPTION, {SubPid, Topic}),
     Group = maps:get(share, SubOpts, undefined),
-    do_subscribe(Group, Topic, SubPid, SubOpts).
+    do_subscribe(Group, Topic, SubPid, _Weight, SubOpts).
 
-do_subscribe(undefined, Topic, SubPid, SubOpts) ->
+do_subscribe(undefined, Topic, SubPid, _Weight, SubOpts) ->
     case emqx_broker_helper:get_sub_shard(SubPid, Topic) of
         0 ->
             true = ets:insert(?SUBSCRIBER, {Topic, SubPid}),
@@ -172,34 +187,47 @@ do_subscribe(undefined, Topic, SubPid, SubOpts) ->
             call(pick({Topic, I}), {subscribe, Topic, I})
     end;
 %% Shared subscription
-do_subscribe(Group, Topic, SubPid, SubOpts) ->
+do_subscribe(Group, Topic, SubPid, Weight, SubOpts) ->
     true = ets:insert(?SUBOPTION, {{SubPid, Topic}, SubOpts}),
-    emqx_shared_sub:subscribe(Group, Topic, SubPid).
+    emqx_shared_sub:subscribe(Group, Topic, SubPid, Weight).
+
 
 %%--------------------------------------------------------------------
 %% Unsubscribe API
 %%--------------------------------------------------------------------
 
--spec unsubscribe(emqx_types:topic()) -> ok.
-unsubscribe(Topic) when is_binary(Topic) ->
+%-spec(unsubscribe(emqx_types:topic()) -> ok).
+%unsubscribe(Topic) when is_binary(Topic) ->
+%    SubPid = self(),
+%    case ets:lookup(?SUBOPTION, {SubPid, Topic}) of
+%        [{_, SubOpts}] ->
+ %           _ = emqx_broker_helper:reclaim_seq(Topic),
+ %           _ = emqx_trace:unsubscribe(Topic, SubOpts),
+ %            ?SLOG(debug, #{msg => "update posiiiiiiiiiiiiiiibbbb ----------------------", optttss => SubOpts}),
+ %           do_unsubscribe(Topic, SubPid, SubOpts);
+ %       [] -> ok
+ %   end.
+
+-spec(unsubscribe(emqx_types:topic(), integer) -> ok).
+unsubscribe(Topic, Weight) when is_binary(Topic) ->
     SubPid = self(),
     case ets:lookup(?SUBOPTION, {SubPid, Topic}) of
         [{_, SubOpts}] ->
             _ = emqx_broker_helper:reclaim_seq(Topic),
             _ = emqx_trace:unsubscribe(Topic, SubOpts),
-            do_unsubscribe(Topic, SubPid, SubOpts);
-        [] ->
-            ok
+             ?SLOG(debug, #{msg => "update posiiiiiiiiiiiiiiibbbb ----------------------", optttss => SubOpts}),
+            do_unsubscribe(Topic, SubPid, SubOpts, Weight);
+        [] -> ok
     end.
 
-do_unsubscribe(Topic, SubPid, SubOpts) ->
+do_unsubscribe(Topic, SubPid, SubOpts, Weight) ->
     true = ets:delete(?SUBOPTION, {SubPid, Topic}),
     true = ets:delete_object(?SUBSCRIPTION, {SubPid, Topic}),
     Group = maps:get(share, SubOpts, undefined),
-    do_unsubscribe(Group, Topic, SubPid, SubOpts),
+    do_unsubscribe(Group, Topic, SubPid, SubOpts, Weight),
     emqx_exclusive_subscription:unsubscribe(Topic, SubOpts).
 
-do_unsubscribe(undefined, Topic, SubPid, SubOpts) ->
+do_unsubscribe(undefined, Topic, SubPid, SubOpts, undefined) ->
     case maps:get(shard, SubOpts, 0) of
         0 ->
             true = ets:delete_object(?SUBSCRIBER, {Topic, SubPid}),
@@ -208,8 +236,9 @@ do_unsubscribe(undefined, Topic, SubPid, SubOpts) ->
             true = ets:delete_object(?SUBSCRIBER, {{shard, Topic, I}, SubPid}),
             cast(pick({Topic, I}), {unsubscribed, Topic, I})
     end;
-do_unsubscribe(Group, Topic, SubPid, _SubOpts) ->
-    emqx_shared_sub:unsubscribe(Group, Topic, SubPid).
+
+do_unsubscribe(Group, Topic, SubPid, _SubOpts, Weight) ->
+    emqx_shared_sub:unsubscribe(Group, Topic, SubPid, Weight).
 
 %%--------------------------------------------------------------------
 %% Publish
@@ -218,6 +247,7 @@ do_unsubscribe(Group, Topic, SubPid, _SubOpts) ->
 -spec publish(emqx_types:message()) -> emqx_types:publish_result().
 publish(Msg) when is_record(Msg, message) ->
     _ = emqx_trace:publish(Msg),
+    % samo ako is_sys vrati false izvrsava drugu fju 
     emqx_message:is_sys(Msg) orelse emqx_metrics:inc('messages.publish'),
     case emqx_hooks:run_fold('message.publish', [], emqx_message:clean_dup(Msg)) of
         #message{headers = #{allow_publish := false}, topic = Topic} ->
@@ -230,6 +260,7 @@ publish(Msg) when is_record(Msg, message) ->
             emqx_persistent_session:persist_message(Msg1),
             route(aggre(emqx_router:match_routes(Topic)), delivery(Msg1))
     end.
+    
 
 %% Called internally
 -spec safe_publish(emqx_types:message()) -> emqx_types:publish_result().

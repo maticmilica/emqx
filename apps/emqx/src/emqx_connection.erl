@@ -592,6 +592,7 @@ handle_msg({close, Reason}, State) ->
     ?TRACE("SOCKET", "socket_force_closed", #{reason => Reason}),
     handle_info({sock_closed, Reason}, close_socket(State));
 handle_msg({event, connected}, State = #state{channel = Channel}) ->
+    ?SLOG(info, #{msg => "######################"}),
     ClientId = emqx_channel:info(clientid, Channel),
     emqx_cm:insert_channel_info(ClientId, info(State), stats(State));
 handle_msg({event, disconnected}, State = #state{channel = Channel}) ->

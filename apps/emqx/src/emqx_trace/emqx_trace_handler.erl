@@ -160,15 +160,30 @@ filters(#{type := topic, filter := Filter, name := Name}) ->
 filters(#{type := ip_address, filter := Filter, name := Name}) ->
     [{ip_address, {fun ?MODULE:filter_ip_address/2, {ensure_list(Filter), Name}}}].
 
-formatter(#{type := _Type}) ->
-    {emqx_trace_formatter, #{
-        %% template is for ?SLOG message not ?TRACE.
-        template => [time, " [", level, "] ", msg, "\n"],
-        single_line => true,
-        max_size => unlimited,
-        depth => unlimited,
-        payload_encode => payload_encode()
-    }}.
+formatter(#{type := Type}) ->
+    {logger_formatter,
+        #{
+            template => template(Type),
+            single_line => false,
+            max_size => unlimited,
+            depth => unlimited
+        }
+    }.
+
+%% Don't log clientid since clientid only supports exact match, all client ids are the same.
+%% if clientid is not latin characters. the logger_formatter restricts the output must be `~tp`
+%% (actually should use `~ts`), the utf8 characters clientid will become very difficult to read.
+template(clientid) ->
+    [time, " [", level, "] ", {peername, [peername, " "], []}, msg, "\n"];
+%% TODO better format when clientid is utf8.
+template(_) ->
+    [time, " [", level, "] ",
+        {clientid,
+            [{peername, [clientid, "(w:", weight, ")@", peername, " "], [clientid, " "]}],
+            [{peername, [peername, " "], []}]
+        },
+        msg, "\n"
+    ].
 
 filter_traces(#{id := Id, level := Level, dst := Dst, filters := Filters}, Acc) ->
     Init = #{id => Id, level => Level, dst => Dst},

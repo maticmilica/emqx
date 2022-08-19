@@ -160,6 +160,9 @@
 
 -dialyzer({no_match, [shutdown/4, ensure_timer/2, interval/2]}).
 
+-define(SUBOPTION, emqx_suboption).
+
+
 %%--------------------------------------------------------------------
 %% Info, Attrs and Caps
 %%--------------------------------------------------------------------
@@ -194,6 +197,8 @@ info(listener, #channel{clientinfo = ClientInfo}) ->
     maps:get(listener, ClientInfo);
 info(clientid, #channel{clientinfo = ClientInfo}) ->
     maps:get(clientid, ClientInfo, undefined);
+info(weight, #channel{clientinfo = ClientInfo}) ->
+    maps:get(weight, ClientInfo, undefined);
 info(username, #channel{clientinfo = ClientInfo}) ->
     maps:get(username, ClientInfo, undefined);
 info(session, #channel{session = Session}) ->
@@ -262,6 +267,9 @@ init(
             sockport => SockPort,
             clientid => undefined,
             username => undefined,
+            weight       => undefined,
+            % verovatno ovde treba dodati koliko poruka mu je poslato? ili u listu klijenata za brokera?
+            % lista je u bazi, sta ako je cluster
             mountpoint => MountPoint,
             is_bridge => false,
             is_superuser => false,
@@ -317,6 +325,8 @@ take_ws_cookie(ClientInfo, ConnInfo) ->
 
 %%--------------------------------------------------------------------
 %% Handle incoming packet
+%
+%  Handle_in se poziva iz ws
 %%--------------------------------------------------------------------
 
 -spec handle_in(emqx_types:packet(), channel()) ->
@@ -414,6 +424,7 @@ handle_in(?PACKET(_), Channel = #channel{conn_state = ConnState}) when
 ->
     handle_out(disconnect, ?RC_PROTOCOL_ERROR, Channel);
 handle_in(Packet = ?PUBLISH_PACKET(_QoS), Channel) ->
+    ?SLOG(debug, "RECV PUBLISH ~s", [emqx_packet:format(Packet)]),
     case emqx_packet:check(Packet) of
         ok -> process_publish(Packet, Channel);
         {error, ReasonCode} -> handle_out(disconnect, ReasonCode, Channel)
@@ -644,7 +655,20 @@ process_publish(Packet = ?PUBLISH_PACKET(QoS, Topic, PacketId), Channel) ->
     of
         {ok, NPacket, NChannel} ->
             Msg = packet_to_message(NPacket, NChannel),
-            do_publish(PacketId, Msg, NChannel);
+            case emqx_message:is_update(Msg) of
+                true ->
+                    OldWeight = get_old_weight(NChannel),
+                    NewWeight = get_w(Msg),
+                    Client = NChannel#channel.clientinfo,
+                    NChannel2 = NChannel#channel{clientinfo = maps:put('weight', NewWeight, Client)},
+                    ?SLOG(debug, #{ msg => "PUBLISHHHHHHHHHHHH ------------", oldddd => OldWeight, newww => NewWeight}),
+                    Pid = self(),           % da li moze iz poruke?
+                    emqx_shared_sub:update_weight(Pid, NewWeight),
+                    emqx_shared_sub:update_weightsum(Pid, NewWeight, OldWeight),
+                    {ok, NChannel2};
+                false ->
+                    do_publish(PacketId, Msg, NChannel)
+            end;
         {error, Rc = ?RC_NOT_AUTHORIZED, NChannel} ->
             ?SLOG(
                 warning,
@@ -694,6 +718,13 @@ process_publish(Packet = ?PUBLISH_PACKET(QoS, Topic, PacketId), Channel) ->
             ),
             handle_out(disconnect, Rc, NChannel)
     end.
+
+get_w(#message{payload = Payload}) ->
+    list_to_integer(binary_to_list(Payload)).
+
+get_old_weight(#channel{clientinfo = ClientInfo}) ->
+    maps:get(weight, ClientInfo).
+
 
 packet_to_message(Packet, #channel{
     conninfo = #{proto_ver := ProtoVer},
@@ -828,6 +859,7 @@ do_subscribe(
             session = Session
         }
 ) ->
+    % OVDE u ClientInfo ima i weight
     NTopicFilter = emqx_mountpoint:mount(MountPoint, TopicFilter),
     NSubOpts = enrich_subopts(maps:merge(?DEFAULT_SUBOPTS, SubOpts), Channel),
     case emqx_session:subscribe(ClientInfo, NTopicFilter, NSubOpts, Session) of
@@ -1475,7 +1507,8 @@ enrich_conninfo(
         keepalive = Keepalive,
         properties = ConnProps,
         clientid = ClientId,
-        username = Username
+        username = Username,
+        weight = Weight
     },
     Channel = #channel{
         conninfo = ConnInfo,
@@ -1490,6 +1523,7 @@ enrich_conninfo(
         keepalive => Keepalive,
         clientid => ClientId,
         username => Username,
+        weight => Weight,
         conn_props => ConnProps,
         expiry_interval => ExpiryInterval,
         receive_maximum => receive_maximum(Zone, ConnProps)
@@ -1542,6 +1576,7 @@ enrich_client(ConnPkt, Channel = #channel{clientinfo = ClientInfo}) ->
     Pipe = pipeline(
         [
             fun set_username/2,
+            fun set_weight/2,
             fun set_bridge_mode/2,
             fun maybe_username_as_clientid/2,
             fun maybe_assign_clientid/2,
@@ -1564,6 +1599,11 @@ set_username(
     {ok, ClientInfo#{username => Username}};
 set_username(_ConnPkt, ClientInfo) ->
     {ok, ClientInfo}.
+
+set_weight(#mqtt_packet_connect{weight = Weight},
+             ClientInfo = #{weight := undefined}) ->
+    {ok, ClientInfo#{weight => Weight}};
+set_weight(_ConnPkt, ClientInfo) -> {ok, ClientInfo}.
 
 set_bridge_mode(#mqtt_packet_connect{is_bridge = true}, ClientInfo) ->
     {ok, ClientInfo#{is_bridge => true}};
@@ -1604,8 +1644,9 @@ fix_mountpoint(_ConnPkt, ClientInfo = #{mountpoint := MountPoint}) ->
 %%--------------------------------------------------------------------
 %% Set log metadata
 
-set_log_meta(_ConnPkt, #channel{clientinfo = #{clientid := ClientId}}) ->
-    emqx_logger:set_metadata_clientid(ClientId).
+set_log_meta(_ConnPkt, #channel{clientinfo = #{clientid := ClientId, weight := Weight}}) ->
+   emqx_logger:set_metadata_weight(Weight),
+   emqx_logger:set_metadata_clientid(ClientId).
 
 %%--------------------------------------------------------------------
 %% Check banned

@@ -1227,13 +1227,22 @@ do_formatter(json, CharsLimit, SingleLine, TimeOffSet, Depth) ->
         depth => Depth
     }};
 do_formatter(text, CharsLimit, SingleLine, TimeOffSet, Depth) ->
-    {emqx_logger_textfmt, #{
-        template => [time, " [", level, "] ", msg, "\n"],
-        chars_limit => CharsLimit,
-        single_line => SingleLine,
-        time_offset => TimeOffSet,
-        depth => Depth
-    }}.
+    {emqx_logger_textfmt,
+        #{template =>
+            [time," [",level,"] ",
+                {clientid,
+                    [{peername,
+                        [clientid, "(w:", weight,")@",peername," "],
+                        [clientid, " "]}],
+                    [{peername,
+                        [peername," "],
+                        []}]},
+                msg,"\n"],
+          chars_limit => CharsLimit,
+          single_line => SingleLine,
+          time_offset => TimeOffSet,
+          depth => Depth
+        }}.
 
 log_filter(Conf) ->
     case conf_get("supervisor_reports", Conf) of

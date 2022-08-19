@@ -23,6 +23,8 @@
 -include("logger.hrl").
 -include("types.hrl").
 
+%-import(string,[concat/2]). 
+
 %% Mnesia bootstrap
 -export([mnesia/1]).
 
@@ -32,8 +34,8 @@
 -export([start_link/0]).
 
 -export([
-    subscribe/3,
-    unsubscribe/3
+    subscribe/4,
+    unsubscribe/4
 ]).
 
 -export([
@@ -67,6 +69,9 @@
     code_change/3
 ]).
 
+
+-export([update_weight/2, update_weightsum/3]).
+
 -export_type([strategy/0]).
 
 -type strategy() ::
@@ -77,10 +82,15 @@
     %% same as hash_clientid, backward compatible
     | hash
     | hash_clientid
-    | hash_topic.
+    | hash_topic
+    | milica
+    | advanced.
 
 -define(SERVER, ?MODULE).
 -define(TAB, emqx_shared_subscription).
+-define(TAB_WEIGHT, emqx_client_weight).
+-define(TAB_WEIGHTSUM, emqx_weightsum).
+-define(TAB_POSSIBILITIES, emqx_possibilities).
 -define(SHARED_SUBS, emqx_shared_subscriber).
 -define(ALIVE_SUBS, emqx_alive_shared_subscribers).
 -define(SHARED_SUB_QOS1_DISPATCH_TIMEOUT_SECONDS, 5).
@@ -92,19 +102,50 @@
 -record(state, {pmon}).
 
 -record(emqx_shared_subscription, {group, topic, subpid}).
+-record(emqx_client_weight, {subpid, weight}).
+-record(emqx_weightsum, {group, topic, weightsum}).
+-record(emqx_possibilities, {group, topic, p_array}).
 
 %%--------------------------------------------------------------------
 %% Mnesia bootstrap
 %%--------------------------------------------------------------------
 
 mnesia(boot) ->
-    ok = mria:create_table(?TAB, [
+    mria:create_table(?TAB, [
         {type, bag},
         {rlog_shard, ?SHARED_SUB_SHARD},
         {storage, ram_copies},
         {record_name, emqx_shared_subscription},
         {attributes, record_info(fields, emqx_shared_subscription)}
-    ]).
+    ]),
+    mria:create_table(?TAB_WEIGHT, [
+        {type, set},
+        {rlog_shard, ?SHARED_SUB_SHARD},
+        {storage, ram_copies},
+        {record_name, emqx_client_weight},
+        {attributes, record_info(fields, emqx_client_weight)}
+    ]),
+    mria:create_table(?TAB_WEIGHTSUM, [
+        {type, set},
+        {rlog_shard, ?SHARED_SUB_SHARD},
+        {storage, ram_copies},
+        {record_name, emqx_weightsum},
+        {attributes, record_info(fields, emqx_weightsum)}
+    ]),
+    mria:create_table(?TAB_POSSIBILITIES, [
+        {type, set},
+        {rlog_shard, ?SHARED_SUB_SHARD},
+        {storage, ram_copies},
+        {record_name, emqx_possibilities},
+        {attributes, record_info(fields, emqx_possibilities)}
+    ]),
+
+
+    %TabOpts = [public, {read_concurrency, true}, {write_concurrency, true}],
+    %ok = emqx_tables:new(?WEIGHTSUM, [set | TabOpts]),
+    %ok = emqx_tables:new(?P_ARRAY, [set | TabOpts]),
+    
+    ok.
 
 %%--------------------------------------------------------------------
 %% API
@@ -114,16 +155,45 @@ mnesia(boot) ->
 start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
--spec subscribe(emqx_types:group(), emqx_types:topic(), pid()) -> ok.
-subscribe(Group, Topic, SubPid) when is_pid(SubPid) ->
-    gen_server:call(?SERVER, {subscribe, Group, Topic, SubPid}).
+-spec subscribe(emqx_types:group(), emqx_types:topic(), pid(), emqx_types:weight()) -> ok.
+subscribe(Group, Topic, SubPid, Weight) when is_pid(SubPid) ->
+    gen_server:call(?SERVER, {subscribe, Group, Topic, SubPid, Weight}).
 
--spec unsubscribe(emqx_types:group(), emqx_types:topic(), pid()) -> ok.
-unsubscribe(Group, Topic, SubPid) when is_pid(SubPid) ->
-    gen_server:call(?SERVER, {unsubscribe, Group, Topic, SubPid}).
+% petlja koja ide od 1 do NumL i ubacuje element Elem u listu L, vraca L kao povratnu vrednost
+loop(L, Elem, NumL) -> 
+    loop(L, Elem, NumL, 0).
+loop(L, _, [], _) -> 
+    L;
+loop(L, Elem, [_|T], Acc) ->
+    loop(L++[Elem], Elem, T, Acc+1).
+
+% petlja koja ide od 1 do NumL i brise element Elem iz liste L, vraca L kao povratnu vrednost
+loop_delete(L, Elem, NumL) -> 
+    loop_delete(L, Elem, NumL, 0).
+loop_delete(L, _, [], _) -> 
+    L;
+loop_delete(L, Elem, [_|T], Acc) ->
+    NewL = lists:delete(Elem,L),
+    loop_delete(NewL, Elem, T, Acc+1).
+
+%unsubscribe(Group, Topic, SubPid) when is_pid(SubPid) ->
+%    gen_server:call(?SERVER, {unsubscribe, Group, Topic, SubPid}).
+-spec unsubscribe(emqx_types:group(), emqx_types:topic(), pid(), integer) -> ok.
+unsubscribe(Group, Topic, SubPid, Weight) when is_pid(SubPid) ->
+    gen_server:call(?SERVER, {unsubscribe, Group, Topic, SubPid, Weight}).
+
 
 record(Group, Topic, SubPid) ->
     #emqx_shared_subscription{group = Group, topic = Topic, subpid = SubPid}.
+
+create_weight_record(SubPid, Weight) ->
+    #emqx_client_weight{subpid = SubPid, weight = Weight}.
+
+weightsum_record(Group, Topic, WeightSum) ->
+    #emqx_weightsum{group = Group, topic = Topic, weightsum = WeightSum}.
+
+possibilities_record(Group, Topic, Array) ->
+    #emqx_possibilities{group = Group, topic = Topic, p_array = Array}.
 
 -spec dispatch(emqx_types:group(), emqx_types:topic(), emqx_types:delivery()) ->
     emqx_types:deliver_result().
@@ -131,6 +201,8 @@ dispatch(Group, Topic, Delivery) ->
     dispatch(Group, Topic, Delivery, _FailedSubs = []).
 
 dispatch(Group, Topic, Delivery = #delivery{message = Msg}, FailedSubs) ->
+    % Client id ovde je id od onoga ko salje (publisher)
+    % u ovu funkciju udje 1 za svaku grupu
     #message{from = ClientId, topic = SourceTopic} = Msg,
     case pick(strategy(Group), ClientId, SourceTopic, Group, Topic, FailedSubs) of
         false ->
@@ -274,6 +346,7 @@ pick(Strategy, ClientId, SourceTopic, Group, Topic, FailedSubs) ->
 
 do_pick(Strategy, ClientId, SourceTopic, Group, Topic, FailedSubs) ->
     All = subscribers(Group, Topic),
+    ?SLOG(debug, #{msg => "DO PICK -----------------------", all => All}),
     case All -- FailedSubs of
         [] when All =:= [] ->
             %% Genuinely no subscriber
@@ -286,8 +359,38 @@ do_pick(Strategy, ClientId, SourceTopic, Group, Topic, FailedSubs) ->
             {fresh, pick_subscriber(Group, Topic, Strategy, ClientId, SourceTopic, Subs)}
     end.
 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%OVO JE STARO
+% pick_subscriber(_Group, _Topic, _Strategy, _ClientId, _SourceTopic, [Sub]) -> Sub;
+% pick_subscriber(Group, Topic, Strategy, ClientId, SourceTopic, Subs) ->
+%     Nth = do_pick_subscriber(Group, Topic, Strategy, ClientId, SourceTopic, length(Subs)),
+%     lists:nth(Nth, Subs).
+
+% do_pick_subscriber(_Group, _Topic, random, _ClientId, _SourceTopic, Count) ->
+%     rand:uniform(Count);
+
+% do_pick_subscriber(Group, Topic, hash, ClientId, SourceTopic, Count) ->
+%     %% backward compatible
+%     do_pick_subscriber(Group, Topic, hash_clientid, ClientId, SourceTopic, Count);
+
+% do_pick_subscriber(_Group, _Topic, hash_clientid, ClientId, _SourceTopic, Count) ->
+%     1 + erlang:phash2(ClientId) rem Count;
+
+% do_pick_subscriber(_Group, _Topic, hash_topic, _ClientId, SourceTopic, Count) ->
+%     1 + erlang:phash2(SourceTopic) rem Count;
+
+% do_pick_subscriber(Group, Topic, round_robin, _ClientId, _SourceTopic, Count) ->
+%     Rem = case erlang:get({shared_sub_round_robin, Group, Topic}) of
+%               undefined -> rand:uniform(Count) - 1;
+%               N -> (N + 1) rem Count
+%           end,
+%     _ = erlang:put({shared_sub_round_robin, Group, Topic}, Rem),
+%     Rem + 1;
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
 pick_subscriber(_Group, _Topic, _Strategy, _ClientId, _SourceTopic, [Sub]) ->
     Sub;
+
 pick_subscriber(Group, Topic, local, ClientId, SourceTopic, Subs) ->
     case lists:filter(fun(Pid) -> erlang:node(Pid) =:= node() end, Subs) of
         [_ | _] = LocalSubs ->
@@ -295,27 +398,96 @@ pick_subscriber(Group, Topic, local, ClientId, SourceTopic, Subs) ->
         [] ->
             pick_subscriber(Group, Topic, random, ClientId, SourceTopic, Subs)
     end;
-pick_subscriber(Group, Topic, Strategy, ClientId, SourceTopic, Subs) ->
-    Nth = do_pick_subscriber(Group, Topic, Strategy, ClientId, SourceTopic, length(Subs)),
-    lists:nth(Nth, Subs).
 
-do_pick_subscriber(_Group, _Topic, random, _ClientId, _SourceTopic, Count) ->
-    rand:uniform(Count);
-do_pick_subscriber(Group, Topic, hash, ClientId, SourceTopic, Count) ->
+pick_subscriber(Group, Topic, Strategy, ClientId, SourceTopic, Subs) ->
+    %Nth = do_pick_subscriber(Group, Topic, Strategy, ClientId, SourceTopic, Subs),
+    %lists:nth(Nth, Subs).
+    do_pick_subscriber(Group, Topic, Strategy, ClientId, SourceTopic, Subs).
+
+do_pick_subscriber(_Group, _Topic, random, _ClientId, _SourceTopic, Subs) ->
+    Count = length(Subs),
+    Nth = rand:uniform(Count),
+    lists:nth(Nth, Subs);
+
+
+do_pick_subscriber(Group, Topic, hash, ClientId, SourceTopic, Subs) ->
     %% backward compatible
-    do_pick_subscriber(Group, Topic, hash_clientid, ClientId, SourceTopic, Count);
-do_pick_subscriber(_Group, _Topic, hash_clientid, ClientId, _SourceTopic, Count) ->
-    1 + erlang:phash2(ClientId) rem Count;
-do_pick_subscriber(_Group, _Topic, hash_topic, _ClientId, SourceTopic, Count) ->
-    1 + erlang:phash2(SourceTopic) rem Count;
-do_pick_subscriber(Group, Topic, round_robin, _ClientId, _SourceTopic, Count) ->
-    Rem =
-        case erlang:get({shared_sub_round_robin, Group, Topic}) of
-            undefined -> rand:uniform(Count) - 1;
-            N -> (N + 1) rem Count
-        end,
+    Nth = do_pick_subscriber(Group, Topic, hash_clientid, ClientId, SourceTopic, Subs),
+    lists:nth(Nth, Subs);
+
+
+do_pick_subscriber(_Group, _Topic, hash_clientid, ClientId, _SourceTopic, Subs) ->
+    Count = length(Subs),
+    Nth = 1 + erlang:phash2(ClientId) rem Count,
+    lists:nth(Nth, Subs);
+
+
+do_pick_subscriber(_Group, _Topic, hash_topic, _ClientId, SourceTopic, Subs) ->
+    Count = length(Subs),
+    Nth = 1 + erlang:phash2(SourceTopic) rem Count,
+    lists:nth(Nth, Subs);
+
+
+do_pick_subscriber(Group, Topic, round_robin, _ClientId, _SourceTopic, Subs) ->
+    Count = length(Subs),
+    Rem = case erlang:get({shared_sub_round_robin, Group, Topic}) of
+              undefined -> rand:uniform(Count) - 1;
+              N -> (N + 1) rem Count
+          end,
     _ = erlang:put({shared_sub_round_robin, Group, Topic}, Rem),
-    Rem + 1.
+    Nth = Rem + 1,
+    lists:nth(Nth, Subs);
+
+% Finds client by priority: 
+% the biggest priority has weight
+% if there is more than one client with the same priority, messages will be sent to them in rr order
+do_pick_subscriber(_Group, _Topic, milica, _ClientId, _SourceTopic, Subs) ->
+    
+    Init = #{weight => 11, index => 0, indexlist => []},
+    
+        ?SLOG(debug, #{msg => "MILICAAAAAAAAA ----------------------", sve => ets:match_object(?TAB_WEIGHT, {'$0', '$1', '$2'})}),
+
+
+    Acc = lists:foldl(fun(SPid, IterationMap) -> 
+        %Weight = emqx_broker:get_weight(SPid),             OVAKO U LOKALU, KAD SE SALJE NA CONNECT
+
+        Weight = get_weight(SPid),
+        MinElem = maps:get(weight, IterationMap),
+        CurrentIndex = maps:get(index, IterationMap),
+        MinIndexList = maps:get(indexlist, IterationMap),     
+
+        if 
+            Weight < MinElem ->
+                #{weight => Weight, index => CurrentIndex + 1, indexlist => [CurrentIndex+1]};
+            Weight == MinElem ->
+                #{weight => Weight, index => CurrentIndex + 1, indexlist => MinIndexList ++ [CurrentIndex+1]};
+            true ->
+                #{weight => MinElem, index => CurrentIndex + 1, indexlist => MinIndexList}
+        end
+
+    end, Init, Subs),
+
+    % Acc is map with indexlist
+    % indeksi klijenata koji imaju min weight je u indexlist, ona se prosledjuje u rr
+    SubPidsMin = maps:get(indexlist, Acc),
+    do_pick_subscriber(_Group, _Topic, round_robin, _ClientId, _SourceTopic, SubPidsMin);
+
+do_pick_subscriber(Group, Topic, advanced, _ClientId, _SourceTopic, _Subs) ->
+    %Name = concat(binary_to_list(Group), binary_to_list(Topic)),   
+    %[{_Record, _G, _T, Sum}] = ets:match_object(?TAB_WEIGHTSUM, {Group, Topic, '$2'}),
+
+    [{_Record, _G, _T, Sum}] = mnesia:dirty_match_object(#emqx_weightsum{group = Group, topic = Topic, _ = '_'}),
+    % Sum je ukupna suma tezina klijenata prijavljenih na grupu Group i topic Topic
+    
+    X = rand:uniform(Sum),
+    %[{_G, _T, ListClients}] = ets:match_object(?P_ARRAY, {Group, Topic, '$2'}),
+    [{_R, _G1, _T1, ListClients}] = mnesia:dirty_match_object(#emqx_possibilities{group = Group, topic = Topic, _ = '_'}),
+    Cli = lists:nth(X, ListClients),
+    
+    ?SLOG(debug, #{msg => "ADVANCED WEIGHT SUM----------------------",  weightsum => Sum, cliiii => Cli, listtt => ListClients}),
+    
+    Cli.
+
 
 subscribers(Group, Topic) ->
     ets:select(?TAB, [{{emqx_shared_subscription, Group, Topic, '$1'}, [], ['$1']}]).
@@ -325,8 +497,11 @@ subscribers(Group, Topic) ->
 %%--------------------------------------------------------------------
 
 init([]) ->
-    ok = mria:wait_for_tables([?TAB]),
+    ok = mria:wait_for_tables([?TAB, ?TAB_WEIGHT]),
     {ok, _} = mnesia:subscribe({table, ?TAB, simple}),
+    {ok, _} = mnesia:subscribe({table, ?TAB_WEIGHT, simple}),
+    %{ok, _} = mnesia:subscribe({table, ?TAB_WEIGHTSUM, simple}),
+    %{ok, _} = mnesia:subscribe({table, ?TAB_POSSIBILITIES, simple}),
     {atomic, PMon} = mria:transaction(?SHARED_SUB_SHARD, fun init_monitors/0),
     ok = emqx_tables:new(?SHARED_SUBS, [protected, bag]),
     ok = emqx_tables:new(?ALIVE_SUBS, [protected, set, {read_concurrency, true}]),
@@ -341,8 +516,11 @@ init_monitors() ->
         ?TAB
     ).
 
-handle_call({subscribe, Group, Topic, SubPid}, _From, State = #state{pmon = PMon}) ->
+handle_call({subscribe, Group, Topic, SubPid, Weight}, _From, State = #state{pmon = PMon}) ->
     mria:dirty_write(?TAB, record(Group, Topic, SubPid)),
+    update_weight(SubPid, Weight),
+    calculate_weight_sum(Group, Topic, Weight),
+    generate_possibilities_array(Group, Topic, SubPid, Weight),
     case ets:member(?SHARED_SUBS, {Group, Topic}) of
         true -> ok;
         false -> ok = emqx_router:do_add_route(Topic, {Group, node()})
@@ -350,8 +528,14 @@ handle_call({subscribe, Group, Topic, SubPid}, _From, State = #state{pmon = PMon
     ok = maybe_insert_alive_tab(SubPid),
     true = ets:insert(?SHARED_SUBS, {{Group, Topic}, SubPid}),
     {reply, ok, update_stats(State#state{pmon = emqx_pmon:monitor(SubPid, PMon)})};
-handle_call({unsubscribe, Group, Topic, SubPid}, _From, State) ->
+
+handle_call({unsubscribe, Group, Topic, SubPid, Weight}, _From, State) ->
+
     mria:dirty_delete_object(?TAB, record(Group, Topic, SubPid)),
+    mria:dirty_delete_object(?TAB_WEIGHT, create_weight_record(SubPid, Weight)),
+    decrease_weightsum(Group, Topic, Weight),
+    remove_from_possibilities_array(Group, Topic, SubPid, Weight),
+
     true = ets:delete_object(?SHARED_SUBS, {{Group, Topic}, SubPid}),
     delete_route_if_needed({Group, Topic}),
     {reply, ok, State};
@@ -363,10 +547,28 @@ handle_cast(Msg, State) ->
     ?SLOG(error, #{msg => "unexpected_cast", req => Msg}),
     {noreply, State}.
 
-handle_info(
-    {mnesia_table_event, {write, #emqx_shared_subscription{subpid = SubPid}, _}},
-    State = #state{pmon = PMon}
-) ->
+
+% da li su ove 2 funkcije potrebne? Mozda zbog clustera kao event da je novi dodat?
+%%%%%%%%%%%%%%%%%%%
+handle_info({mnesia_table_event, {write, NewRecord, _}}, _State = #state{pmon = _PMon}) when is_record(NewRecord, emqx_possibilities) ->
+    ?SLOG(debug, #{msg => "mnesia write eventttt posibbbb ----------------------", record => NewRecord});
+    %#emqx_possibilities{p_array = Array} = NewRecord,
+    %{noreply, update_stats(State#state{pmon = emqx_pmon:monitor(Array, PMon)})};
+
+handle_info({mnesia_table_event, {write, NewRecord, _}}, _State = #state{pmon = _PMon}) when is_record(NewRecord, emqx_weightsum) ->
+    ?SLOG(debug, #{msg => "mnesia write eventttttt summmmm ----------------------", record => NewRecord});
+    %#emqx_weightsum{weightsum = WeightSum} = NewRecord,
+    %{noreply, update_stats(State#state{pmon = emqx_pmon:monitor(WeightSum, PMon)})};
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+handle_info({mnesia_table_event, {write, NewRecord, _}}, State = #state{pmon = PMon}) when is_record(NewRecord, emqx_client_weight) ->
+    #emqx_client_weight{subpid = SubPid} = NewRecord,
+    {noreply, update_stats(State#state{pmon = emqx_pmon:monitor(SubPid, PMon)})};
+
+handle_info({mnesia_table_event, {write, NewRecord, _}}, State = #state{pmon = PMon}) ->
+    #emqx_shared_subscription{subpid = SubPid} = NewRecord,
+
     {noreply, update_stats(State#state{pmon = emqx_pmon:monitor(SubPid, PMon)})};
 %% The subscriber may have subscribed multiple topics, so we need to keep monitoring the PID until
 %% it `unsubscribed` the last topic.
@@ -386,7 +588,8 @@ handle_info(_Info, State) ->
     {noreply, State}.
 
 terminate(_Reason, _State) ->
-    mnesia:unsubscribe({table, ?TAB, simple}).
+    mnesia:unsubscribe({table, ?TAB, simple}),
+    mnesia:unsubscribe({table, ?TAB_WEIGHT, simple}).
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -403,6 +606,22 @@ maybe_insert_alive_tab(Pid) when is_pid(Pid) ->
 
 cleanup_down(SubPid) ->
     ?IS_LOCAL_PID(SubPid) orelse ets:delete(?ALIVE_SUBS, SubPid),
+
+    % get Group, Topic and Weight from SubPid
+    [{_, G, T, _}] = mnesia:dirty_match_object(#emqx_shared_subscription{_ = '_', subpid = SubPid}),
+    [{_, _P, W}] = mnesia:dirty_match_object(#emqx_client_weight{_ = '_', subpid = SubPid}),
+    
+    % remove from array
+    remove_from_possibilities_array(G, T, SubPid, W),
+
+    % decrease weightsum
+    decrease_weightsum(G, T, W),
+
+    ?SLOG(debug, #{msg => "------------------- CLEAN UPPPPPPPPPPP", 
+        nizzzzzzzz => mnesia:dirty_match_object(#emqx_possibilities{group = G, topic = T, _ = '_'}),
+        summmm => mnesia:dirty_match_object(#emqx_client_weight{_ = '_', subpid = SubPid})
+    }),
+
     lists:foreach(
         fun(Record = #emqx_shared_subscription{topic = Topic, group = Group}) ->
             ok = mria:dirty_delete_object(?TAB, Record),
@@ -410,7 +629,14 @@ cleanup_down(SubPid) ->
             delete_route_if_needed({Group, Topic})
         end,
         mnesia:dirty_match_object(#emqx_shared_subscription{_ = '_', subpid = SubPid})
-    ).
+    ),
+    lists:foreach(
+        fun(Record = #emqx_client_weight{subpid = _SubPid, weight = _Weight}) ->
+            ok = mria:dirty_delete_object(?TAB_WEIGHT, Record)
+        end,
+        mnesia:dirty_match_object(#emqx_client_weight{_ = '_', subpid = SubPid})
+    )
+    .
 
 update_stats(State) ->
     emqx_stats:setstat(
@@ -435,3 +661,85 @@ delete_route_if_needed({Group, Topic}) ->
         true -> ok;
         false -> ok = emqx_router:do_delete_route(Topic, {Group, node()})
     end.
+
+get_weight(SubPid) ->
+    WeightList = ets:lookup_element(?TAB_WEIGHT, SubPid, 3),
+    lists:nth(1, WeightList).
+
+update_weight(SubPid, NewWeight) ->
+    OldRecordsList = mnesia:dirty_match_object(#emqx_client_weight{_ = '_', subpid = SubPid}),
+    if 
+        length(OldRecordsList) /= 0 ->
+            Record = lists:nth(1, OldRecordsList),
+            ok = mria:dirty_delete_object(?TAB_WEIGHT, Record);
+        true ->
+            ok
+    end,
+
+    NewRecord = create_weight_record(SubPid, NewWeight),
+    mria:dirty_write(?TAB_WEIGHT, NewRecord).
+
+calculate_weight_sum(Group, Topic, Weight) ->
+    case mnesia:dirty_match_object(#emqx_weightsum{group = Group, topic = Topic, _ = '_'}) of
+        [] -> 
+            mria:dirty_write(?TAB_WEIGHTSUM, weightsum_record(Group, Topic, Weight));
+        [{_, G, T, Sum}] -> 
+           mria:dirty_write(?TAB_WEIGHTSUM, weightsum_record(G, T, Sum+Weight))
+    end,
+
+    ?SLOG(debug, #{msg => "------------------- WEIGHT SUM-----------------------", 
+        xxxx => mnesia:dirty_match_object(#emqx_weightsum{group = Group, topic = Topic, _ = '_'})})
+    .
+    
+decrease_weightsum(Group, Topic, Weight) ->
+    [{_, G, T, Sum}] = mnesia:dirty_match_object(#emqx_weightsum{group = Group, topic = Topic, _ = '_'}),
+
+    mria:dirty_write(?TAB_WEIGHTSUM, weightsum_record(G, T, Sum-Weight))
+   
+    %?SLOG(debug, #{msg => "------------------- WEIGHT SUM-----------------------", 
+    %    xxxx => mnesia:dirty_match_object(#emqx_weightsum{group = Group, topic = Topic, _ = '_'})})
+    .
+
+update_weightsum(Pid, NewWeight, OldWeight) ->
+    % find Group and Topic from Pid
+    [{_, Group, Topic, _}] = mnesia:dirty_match_object(#emqx_shared_subscription{_ = '_', subpid = Pid}),
+    Diff = NewWeight - OldWeight,
+    % Find Sum and update it with diff
+    [{_, G, T, Sum}] = mnesia:dirty_match_object(#emqx_weightsum{group = Group, topic = Topic, _ = '_'}),
+    mria:dirty_write(?TAB_WEIGHTSUM, weightsum_record(G, T, Diff+Sum)),
+
+    update_possibilities(G, T, Pid, OldWeight, NewWeight),
+    
+    ?SLOG(debug, #{msg => "------------------- UPDATE WEIGHT SUM 222222222222222222-----------------------", 
+        aaa => mnesia:dirty_match_object(#emqx_weightsum{group = Group, topic = Topic, _ = '_'})})
+    .
+
+generate_possibilities_array(Group, Topic, SubPid, Weight) ->
+    
+    case mnesia:dirty_match_object(#emqx_possibilities{group = Group, topic = Topic, _ = '_'}) of
+        [] -> 
+            X = lists:seq(1,Weight),
+            NewL = loop([], SubPid, X),
+            mria:dirty_write(?TAB_POSSIBILITIES, possibilities_record(Group, Topic, NewL));
+       [{_, G1, T1, L}] -> 
+            X1 = lists:seq(1, Weight),
+            NewL1 = loop(L, SubPid, X1),
+            mria:dirty_write(?TAB_POSSIBILITIES, possibilities_record(G1, T1, NewL1))
+    end,
+
+    ?SLOG(debug, #{msg => "------------------- NIYYYYY -----------------------", 
+        xxxx => mnesia:dirty_match_object(#emqx_possibilities{group = Group, topic = Topic, _ = '_'})})
+    
+    .
+
+remove_from_possibilities_array(Group, Topic, SubPid, Weight) ->
+    [{_, G, T, List}] = mnesia:dirty_match_object(#emqx_possibilities{group = Group, topic = Topic, _ = '_'}),
+    NoElems = lists:seq(1, Weight),
+    NewList = loop_delete(List, SubPid, NoElems),
+    mria:dirty_write(?TAB_POSSIBILITIES, possibilities_record(G, T, NewList)).
+
+update_possibilities(Gruop, Topic, SubPid, OldWeight, NewWeight) ->
+    remove_from_possibilities_array(Gruop, Topic, SubPid, OldWeight),
+    generate_possibilities_array(Gruop, Topic, SubPid, NewWeight).
+
+

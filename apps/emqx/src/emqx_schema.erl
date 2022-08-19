@@ -1142,59 +1142,54 @@ fields("deflate_opts") ->
     ];
 fields("broker") ->
     [
-        {"enable_session_registry",
-            sc(
-                boolean(),
-                #{
-                    default => true,
-                    desc => ?DESC(broker_enable_session_registry)
-                }
-            )},
-        {"session_locking_strategy",
-            sc(
-                hoconsc:enum([local, leader, quorum, all]),
-                #{
-                    default => quorum,
-                    desc => ?DESC(broker_session_locking_strategy)
-                }
-            )},
-        {"shared_subscription_strategy",
-            sc(
-                hoconsc:enum([random, round_robin, sticky, local, hash_topic, hash_clientid]),
-                #{
-                    default => round_robin,
-                    desc => ?DESC(broker_shared_subscription_strategy)
-                }
-            )},
-        {"shared_dispatch_ack_enabled",
-            sc(
-                boolean(),
-                #{
-                    default => false,
-                    desc => ?DESC(broker_shared_dispatch_ack_enabled)
-                }
-            )},
-        {"route_batch_clean",
-            sc(
-                boolean(),
-                #{
-                    default => true,
-                    desc => ?DESC(broker_route_batch_clean)
-                }
-            )},
-        {"perf",
-            sc(
-                ref("broker_perf"),
-                #{}
-            )},
-        {"shared_subscription_group",
-            sc(
-                map(name, ref("shared_subscription_group")),
-                #{
-                    example => #{<<"example_group">> => #{<<"strategy">> => <<"random">>}},
-                    desc => ?DESC(shared_subscription_group_strategy)
-                }
-            )}
+      {"sys_msg_interval",
+       sc(hoconsc:union([disabled, duration()]),
+          #{ default => "1m"
+           })
+      }
+    , {"sys_heartbeat_interval",
+       sc(hoconsc:union([disabled, duration()]),
+          #{ default => "30s"
+           })
+      }
+    , {"enable_session_registry",
+       sc(boolean(),
+          #{ default => true
+           })
+      }
+    , {"session_locking_strategy",
+       sc(hoconsc:enum([local, leader, quorum, all]),
+          #{ default => quorum
+           })
+      }
+    , {"shared_subscription_strategy",
+       sc(hoconsc:enum([random, round_robin, milica, advanced]),
+          #{ default => round_robin
+           })
+      }
+    , {"shared_dispatch_ack_enabled",
+       sc(boolean(),
+          #{ default => false
+           })
+      }
+    , {"route_batch_clean",
+       sc(boolean(),
+          #{ default => true
+           })}
+    , {"perf",
+       sc(ref("broker_perf"),
+          #{ desc => "Broker performance tuning pamaters"
+           })
+      }
+
+    , {"shared_subscription_group",
+       sc(
+           map(name, ref("shared_subscription_group")),
+           #{
+               example => #{<<"example_group">> => #{<<"strategy">> => <<"random">>}},
+               desc => ?DESC(shared_subscription_group_strategy)
+           }
+       )}
     ];
 fields("shared_subscription_group") ->
     [

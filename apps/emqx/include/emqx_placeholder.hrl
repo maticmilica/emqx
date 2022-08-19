@@ -27,12 +27,13 @@
 -define(PH_CERT_CN_NAME, <<"${cert_common_name}">>).
 
 %% MQTT
--define(PH_PASSWORD, <<"${password}">>).
--define(PH_CLIENTID, <<"${clientid}">>).
--define(PH_FROM_CLIENTID, <<"${from_clientid}">>).
--define(PH_USERNAME, <<"${username}">>).
--define(PH_FROM_USERNAME, <<"${from_username}">>).
--define(PH_TOPIC, <<"${topic}">>).
+-define(PH_PASSWORD,                <<"${password}">>           ).
+-define(PH_CLIENTID,                <<"${clientid}">>           ).
+-define(PH_FROM_CLIENTID,           <<"${from_clientid}">>      ).
+-define(PH_USERNAME,                <<"${username}">>           ).
+-define(PH_FROM_USERNAME,           <<"${from_username}">>      ).
+-define(PH_TOPIC,                   <<"${topic}">>              ).
+-define(PH_CLIENT_WEIGHT,           <<"${weight}">>             ).
 %% MQTT payload
 -define(PH_PAYLOAD, <<"${payload}">>).
 %% client IPAddress
