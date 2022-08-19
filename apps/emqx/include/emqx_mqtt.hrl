@@ -234,22 +234,23 @@ end).
 }).
 
 -record(mqtt_packet_connect, {
-    proto_name = <<"MQTT">>,
-    proto_ver = ?MQTT_PROTO_V4,
-    is_bridge = false,
-    clean_start = true,
-    will_flag = false,
-    will_qos = ?QOS_0,
-    will_retain = false,
-    keepalive = 0,
-    properties = #{},
-    clientid = <<>>,
-    will_props = #{},
-    will_topic = undefined,
-    will_payload = undefined,
-    username = undefined,
-    password = undefined
-}).
+          proto_name   = <<"MQTT">>,
+          proto_ver    = ?MQTT_PROTO_V4,
+          is_bridge    = false,
+          clean_start  = true,
+          will_flag    = false,
+          will_qos     = ?QOS_0,
+          will_retain  = false,
+          keepalive    = 0,
+          properties   = #{},
+          clientid     = <<>>,
+          will_props   = #{},
+          will_topic   = undefined,
+          will_payload = undefined,
+          username     = undefined,
+          password     = undefined,
+          weight       = undefined
+        }).
 
 -record(mqtt_packet_connack, {
     ack_flags,

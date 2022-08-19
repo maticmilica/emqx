@@ -23,7 +23,7 @@
 
 -export([
     publish/1,
-    subscribe/3,
+    subscribe/4,
     unsubscribe/2,
     log/3
 ]).
@@ -77,14 +77,16 @@
 
 publish(#message{topic = <<"$SYS/", _/binary>>}) ->
     ignore;
+publish(#message{topic = <<"$updateinfo/", _/binary>>}) ->
+    ignore;
 publish(#message{from = From, topic = Topic, payload = Payload}) when
     is_binary(From); is_atom(From)
 ->
     ?TRACE("PUBLISH", "publish_to", #{topic => Topic, payload => Payload}).
 
-subscribe(<<"$SYS/", _/binary>>, _SubId, _SubOpts) ->
+subscribe(<<"$SYS/", _/binary>>, _SubId, _SubOpts, _Weight) ->
     ignore;
-subscribe(Topic, SubId, SubOpts) ->
+subscribe(Topic, SubId, SubOpts, _Weight) ->
     ?TRACE("SUBSCRIBE", "subscribe", #{topic => Topic, sub_opts => SubOpts, sub_id => SubId}).
 
 unsubscribe(<<"$SYS/", _/binary>>, _SubOpts) ->

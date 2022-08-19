@@ -305,6 +305,8 @@ ignore_local(ClientInfo, Delivers, Subscriber, Session) ->
 
 %%--------------------------------------------------------------------
 %% Client -> Broker: SUBSCRIBE
+%
+%   ovo ide posle channel
 %%--------------------------------------------------------------------
 
 -spec subscribe(
@@ -314,16 +316,20 @@ ignore_local(ClientInfo, Delivers, Subscriber, Session) ->
     session()
 ) ->
     {ok, session()} | {error, emqx_types:reason_code()}.
+%%%%%%%%%%%%%%%%%
 subscribe(
-    ClientInfo = #{clientid := ClientId},
+    ClientInfo = #{clientid := ClientId, weight := Weight},
     TopicFilter,
     SubOpts,
     Session = #session{id = SessionID, is_persistent = IsPS, subscriptions = Subs}
 ) ->
+    % i ovde u ClientInfo ima sve podatke o klijentu i dalje se vise ne prosledjuje,...
     IsNew = not maps:is_key(TopicFilter, Subs),
     case IsNew andalso is_subscriptions_full(Session) of
         false ->
-            ok = emqx_broker:subscribe(TopicFilter, ClientId, SubOpts),
+            % u subopts NEMA client id, weight radi ovde!
+            %%%%%%%%%%%%%%%%%%%%%%%
+            ok = emqx_broker:subscribe(TopicFilter, ClientId, SubOpts, Weight),
             ok = emqx_persistent_session:add_subscription(TopicFilter, SessionID, IsPS),
             ok = emqx_hooks:run(
                 'session.subscribed',
@@ -349,14 +355,16 @@ is_subscriptions_full(#session{
 -spec unsubscribe(emqx_types:clientinfo(), emqx_types:topic(), emqx_types:subopts(), session()) ->
     {ok, session()} | {error, emqx_types:reason_code()}.
 unsubscribe(
-    ClientInfo,
+    ClientInfo = #{weight := Weight},
     TopicFilter,
     UnSubOpts,
     Session = #session{id = SessionID, subscriptions = Subs, is_persistent = IsPS}
 ) ->
+
     case maps:find(TopicFilter, Subs) of
         {ok, SubOpts} ->
-            ok = emqx_broker:unsubscribe(TopicFilter),
+            %ok = emqx_broker:unsubscribe(TopicFilter),
+            ok = emqx_broker:unsubscribe(TopicFilter, Weight),
             ok = emqx_persistent_session:remove_subscription(TopicFilter, SessionID, IsPS),
             ok = emqx_hooks:run(
                 'session.unsubscribed',

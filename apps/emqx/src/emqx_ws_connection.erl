@@ -427,6 +427,7 @@ websocket_info({cast, rate_limit}, State) ->
 websocket_info({cast, Msg}, State) ->
     handle_info(Msg, State);
 websocket_info({incoming, Packet = ?CONNECT_PACKET(ConnPkt)}, State) ->
+    ?SLOG(debug, #{msg => "Conn packet ", pkt => ConnPkt}),
     Serialize = emqx_frame:serialize_opts(ConnPkt),
     NState = State#state{serialize = Serialize},
     handle_incoming(Packet, cancel_idle_timer(NState));
@@ -472,7 +473,8 @@ websocket_close(Reason, State) ->
     handle_info({sock_closed, Reason}, State).
 
 terminate(Reason, _Req, #state{channel = Channel}) ->
-    ?TRACE("SOCKET", "websocket_terminated", #{reason => Reason}),
+    ?SLOG(debug, #{msg => "terminated", reason => Reason, channel => Channel}),
+    %emqx_broker:remove_weight(self()),
     emqx_channel:terminate(Reason, Channel);
 terminate(_Reason, _Req, _UnExpectedState) ->
     ok.
@@ -683,6 +685,7 @@ check_oom(State = #state{channel = Channel}) ->
 parse_incoming(<<>>, Packets, State) ->
     {Packets, State};
 parse_incoming(Data, Packets, State = #state{parse_state = ParseState}) ->
+    ?SLOG(debug, #{msg => "parse incoming", data => Data}),
     try emqx_frame:parse(Data, ParseState) of
         {more, NParseState} ->
             {Packets, State#state{parse_state = NParseState}};
@@ -735,6 +738,7 @@ handle_incoming(FrameError, State) ->
 %%--------------------------------------------------------------------
 
 with_channel(Fun, Args, State = #state{channel = Channel}) ->
+    % erlang:apply - iz emqx_channel modula ce pozvati funkciju Fun sa argumentima Args (prvi param je modul, drugi funkcija, treci parametri)
     case erlang:apply(emqx_channel, Fun, Args ++ [Channel]) of
         ok ->
             return(State);

@@ -16,6 +16,8 @@
 
 -module(emqx_topic).
 
+-include("logger.hrl").
+
 %% APIs
 -export([
     match/2,
@@ -45,6 +47,7 @@
 -type words() :: list(word()).
 
 -define(MAX_TOPIC_LEN, 65535).
+-define(UPDATE_TOPIC, <<"$updateinfo">>).
 
 %%--------------------------------------------------------------------
 %% APIs
@@ -95,7 +98,9 @@ validate(Topic) when is_binary(Topic) ->
 validate({Type, Topic}) when Type =:= name; Type =:= filter ->
     validate(Type, Topic).
 
--spec validate(name | filter, topic()) -> true.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+-spec(validate(name | filter, topic()) -> true).
 validate(_, <<>>) ->
     error(empty_topic);
 validate(_, Topic) when is_binary(Topic) andalso (size(Topic) > ?MAX_TOPIC_LEN) ->
@@ -104,9 +109,10 @@ validate(filter, Topic) when is_binary(Topic) ->
     validate2(words(Topic));
 validate(name, Topic) when is_binary(Topic) ->
     Words = words(Topic),
-    validate2(Words) andalso
-        (not wildcard(Words)) orelse
-        error(topic_name_error).
+    ?SLOG(debug, #{msg => "VALIDATE TOPICCCCCCCCC ", words => lists:nth(1, Words)}),
+    validate2(Words)
+        andalso (not wildcard(Words))
+            orelse error(topic_name_error).
 
 validate2([]) ->
     true;
@@ -128,6 +134,58 @@ validate3(<<C/utf8, _Rest/binary>>) when C == $#; C == $+; C == 0 ->
     error('topic_invalid_char');
 validate3(<<_/utf8, Rest/binary>>) ->
     validate3(Rest).
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% -spec(validate(name | filter, topic()) -> true).
+% validate(_, <<>>) ->
+%     error(empty_topic);
+% validate(_, Topic) when is_binary(Topic) andalso (size(Topic) > ?MAX_TOPIC_LEN) ->
+%     error(topic_too_long);
+% validate(filter, Topic) when is_binary(Topic) ->
+%     validate2(words(Topic));
+% validate(name, Topic) when is_binary(Topic) ->
+%     Words = words(Topic),
+%     validate2(Words)
+%         andalso (not wildcard(Words))
+%             orelse error(topic_name_error).
+
+% validate2([]) ->
+%     true;
+% validate2(['#']) -> % end with '#'
+%     true;
+% validate2(['#' | Words]) when length(Words) > 0 ->
+%     error('topic_invalid_#');
+% validate2(['' | Words]) ->
+%     validate2(Words);
+% validate2(['+' | Words]) ->
+%     validate2(Words);
+% validate2([W | Words]) when W == ?UPDATE_TOPIC ->
+%     ?SLOG(debug, #{msg => "VALIDATE TOPICCCCCCCCC 1", words => W}),
+%     updateinfo(W, Words);
+% validate2([W | Words]) ->
+%     ?SLOG(debug, #{msg => "VALIDATE TOPICCCCCCCCC 2", words => W}),
+%     validate3(W) andalso validate2(Words).
+
+% validate3(<<>>) ->
+%     true;
+% validate3(<<C/utf8, _Rest/binary>>) when C == $#; C == $+; C == 0 ->
+%     error('topic_invalid_char');
+% validate3(<<_/utf8, Rest/binary>>) ->
+%     % ovde proverava slovo po slovo
+%     validate3(Rest).
+
+% updateinfo(W, Words) ->
+%     A = lists:member(updateinfo_table2, ets:all()),
+%     if A ->
+%         ets:insert(updateinfo_table2, {updateweighttopic, true});
+%     true ->
+%         ets:new(updateinfo_table2, [named_table, protected, set, {keypos, 1}]),
+%         ets:insert(updateinfo_table2, {updateweighttopic, true})
+%     end,
+%     % ovde moze da se doda parsiranje topic-a, npr ako hocu $updateinfo/weight, $updateinfo/nesto... pa da se i to "sta se update-uje" doda u bazu
+    
+%     validate3(W) andalso validate2(Words),
+%     true.
 
 %% @doc Prepend a topic prefix.
 %% Ensured to have only one / between prefix and suffix.

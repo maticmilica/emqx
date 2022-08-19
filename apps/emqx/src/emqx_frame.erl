@@ -18,6 +18,7 @@
 
 -include("emqx.hrl").
 -include("emqx_mqtt.hrl").
+-include("logger.hrl").
 
 -export([
     initial_parse_state/0,
@@ -157,6 +158,7 @@ parse(Bin, {
     }},
     Options
 }) when is_binary(Bin) ->
+    ?SLOG(debug, #{msg => "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx emqx_frame : parse 4", body =>  Body, header => Header, options => Options}),
     NewBody = append_body(Body, Bin),
     parse_frame(NewBody, Header, Length, Options).
 
@@ -228,10 +230,13 @@ parse_frame(Body, Header, Length, Options) ->
     case body_bytes(Body) >= Length of
         true ->
             <<FrameBin:Length/binary, Rest/binary>> = flatten_body(Body),
+            % ovde nema weight (u frameBin su options)
             case parse_packet(Header, FrameBin, Options) of
                 {Variable, Payload} ->
                     {ok, packet(Header, Variable, Payload), Rest, ?NONE(Options)};
                 Variable = #mqtt_packet_connect{proto_ver = Ver} ->
+                    % ovo je posle parse_packet
+                    %?SLOG(debug, #{msg => "emqx_frame : parse_frame 2", var => Variable}),
                     {ok, packet(Header, Variable), Rest, ?NONE(Options#{version := Ver})};
                 Variable ->
                     {ok, packet(Header, Variable), Rest, ?NONE(Options)}
@@ -255,11 +260,13 @@ packet(Header, Variable) ->
 packet(Header, Variable, Payload) ->
     #mqtt_packet{header = Header, variable = Variable, payload = Payload}.
 
+% NOTE kad ovde dodje nema weight ali ovde bi ga trebalo parsirati
 parse_packet(
     #mqtt_packet_header{type = ?CONNECT},
     FrameBin,
     #{strict_mode := StrictMode}
 ) ->
+    %?SLOG(debug, #{msg => "emqx_frame parse pakcet", rest4 => FrameBin}),
     {ProtoName, Rest} = parse_utf8_string(FrameBin, StrictMode),
     <<BridgeTag:4, ProtoVer:4, Rest1/binary>> = Rest,
     % Note: Crash when reserved flag doesn't equal to 0, there is no strict
@@ -283,8 +290,10 @@ parse_packet(
     },
     {ConnPacket1, Rest5} = parse_will_message(ConnPacket, Rest4, StrictMode),
     {Username, Rest6} = parse_utf8_string(Rest5, StrictMode, bool(UsernameFlag)),
-    {Password, <<>>} = parse_utf8_string(Rest6, StrictMode, bool(PasswordFlag)),
-    ConnPacket1#mqtt_packet_connect{username = Username, password = Password};
+    {Password, Rest7} = parse_utf8_string(Rest6, bool(PasswordFlag)),
+    <<Weight: 16/big >> = Rest7,
+
+    ConnPacket1#mqtt_packet_connect{username = Username, password = Password, weight = Weight};
 parse_packet(
     #mqtt_packet_header{type = ?CONNACK},
     <<AckFlags:8, ReasonCode:8, Rest/binary>>,
@@ -344,6 +353,7 @@ parse_packet(
     {Properties, Rest1} = parse_properties(Rest, Ver, StrictMode),
     TopicFilters = parse_topic_filters(subscribe, Rest1),
     ok = validate_subqos([QoS || {_, #{qos := QoS}} <- TopicFilters]),
+    ?SLOG(debug, #{msg => "--------------------", PacketId => PacketId, props => Properties, topFilt => TopicFilters}),
     #mqtt_packet_subscribe{
         packet_id = PacketId,
         properties = Properties,
@@ -643,6 +653,7 @@ serialize_opts() ->
     ?DEFAULT_OPTIONS.
 
 serialize_opts(#mqtt_packet_connect{proto_ver = ProtoVer, properties = ConnProps}) ->
+    ?SLOG(debug, #{msg => "FRAME SERIALIZE OPTS ", props => ConnProps}),
     MaxSize = get_property('Maximum-Packet-Size', ConnProps, ?MAX_PACKET_SIZE),
     #{version => ProtoVer, max_size => MaxSize}.
 
@@ -679,6 +690,7 @@ serialize(
 ) when
     ?CONNECT =< Type andalso Type =< ?AUTH
 ->
+    ?SLOG(debug, #{msg => "****************************************** SERIALIZE", var => VariableBin, pay => PayloadBin}),
     Len = iolist_size(VariableBin) + iolist_size(PayloadBin),
     [
         <<Type:4, (flag(Dup)):1, (flag(QoS)):2, (flag(Retain)):1>>,
@@ -703,7 +715,8 @@ serialize_variable(
         will_topic = WillTopic,
         will_payload = WillPayload,
         username = Username,
-        password = Password
+        password = Password,
+        weight = Weight
     },
     _Ver
 ) ->
@@ -725,6 +738,7 @@ serialize_variable(
         >>,
         serialize_properties(Properties, ProtoVer),
         serialize_utf8_string(ClientId),
+        serialize_utf8_string(Weight),
         case WillFlag of
             true ->
                 [

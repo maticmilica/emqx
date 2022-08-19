@@ -258,23 +258,24 @@ set_chan_stats(ClientId, ChanPid, Stats) ->
     end.
 
 %% @doc Open a session.
--spec open_session(boolean(), emqx_types:clientinfo(), emqx_types:conninfo()) ->
-    {ok, #{
-        session := emqx_session:session(),
-        present := boolean(),
-        pendings => list()
-    }}
-    | {error, Reason :: term()}.
-open_session(true, ClientInfo = #{clientid := ClientId}, ConnInfo) ->
+-spec(open_session(boolean(), emqx_types:clientinfo(), emqx_types:conninfo())
+      -> {ok, #{session  := emqx_session:session(),
+                present  := boolean(),
+                pendings => list()}}
+       | {error, Reason :: term()}).
+open_session(true, ClientInfo = #{clientid := ClientId}, ConnInfo) ->%, weight := _Weight}, ConnInfo) ->
     Self = self(),
     CleanStart = fun(_) ->
-        ok = discard_session(ClientId),
-        ok = emqx_persistent_session:discard_if_present(ClientId),
-        Session = create_session(ClientInfo, ConnInfo),
-        Session1 = emqx_persistent_session:persist(ClientInfo, ConnInfo, Session),
-        register_channel(ClientId, Self, ConnInfo),
-        {ok, #{session => Session1, present => false}}
-    end,
+                     ok = discard_session(ClientId),
+                     ok = emqx_persistent_session:discard_if_present(ClientId),
+                     Session = create_session(ClientInfo, ConnInfo),
+                     Session1 = emqx_persistent_session:persist(ClientInfo, ConnInfo, Session),
+                     register_channel(ClientId, Self, ConnInfo),
+                     % ovde sam dodala da se u bazi SUBWEIGHT sacuva par PID - weight
+                     %moglo bi se dodati da na connect ide u mensia
+                     %emqx_broker:save_weight(Self, Weight),
+                     {ok, #{session => Session1, present => false}}
+                 end,
     emqx_cm_locker:trans(ClientId, CleanStart);
 open_session(false, ClientInfo = #{clientid := ClientId}, ConnInfo) ->
     Self = self(),

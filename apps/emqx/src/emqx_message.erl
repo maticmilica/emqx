@@ -21,6 +21,7 @@
 -include("emqx.hrl").
 -include("emqx_mqtt.hrl").
 -include("types.hrl").
+-include("logger.hrl").
 
 %% Create
 -export([
@@ -42,17 +43,17 @@
 ]).
 
 %% Flags
--export([
-    is_sys/1,
-    clean_dup/1,
-    get_flag/2,
-    get_flag/3,
-    get_flags/1,
-    set_flag/2,
-    set_flag/3,
-    set_flags/2,
-    unset_flag/2
-]).
+-export([ is_sys/1
+        , is_update/1
+        , clean_dup/1
+        , get_flag/2
+        , get_flag/3
+        , get_flags/1
+        , set_flag/2
+        , set_flag/3
+        , set_flags/2
+        , unset_flag/2
+        ]).
 
 %% Headers
 -export([
@@ -201,7 +202,12 @@ is_sys(#message{topic = <<"$SYS/", _/binary>>}) ->
 is_sys(_Msg) ->
     false.
 
--spec clean_dup(emqx_types:message()) -> emqx_types:message().
+-spec(is_update(emqx_types:message()) -> boolean()).
+is_update(#message{topic = <<"$updateinfo/", _/binary>>}) ->
+    true;
+is_update(_Msg) -> false.
+
+-spec(clean_dup(emqx_types:message()) -> emqx_types:message()).
 clean_dup(Msg = #message{flags = Flags = #{dup := true}}) ->
     Msg#message{flags = Flags#{dup => false}};
 clean_dup(Msg) ->

@@ -40,38 +40,37 @@
 ]).
 
 %% Configs
--export([
-    set_metadata_peername/1,
-    set_metadata_clientid/1,
-    set_proc_metadata/1,
-    set_primary_log_level/1,
-    set_log_handler_level/2,
-    set_log_level/1,
-    set_all_log_handlers_level/1
-]).
 
--export([
-    get_primary_log_level/0,
-    tune_primary_log_level/0,
-    get_log_handlers/0,
-    get_log_handlers/1,
-    get_log_handler/1
-]).
+-export([ set_metadata_peername/1
+        , set_metadata_clientid/1
+        , set_metadata_weight/1
+        , set_proc_metadata/1
+        , set_primary_log_level/1
+        , set_log_handler_level/2
+        , set_log_level/1
+        , set_all_log_handlers_level/1
+        ]).
 
--export([
-    start_log_handler/1,
-    stop_log_handler/1
-]).
+-export([ get_primary_log_level/0
+        , tune_primary_log_level/0
+        , get_log_handlers/0
+        , get_log_handlers/1
+        , get_log_handler/1
+        ]).
 
--type peername_str() :: list().
--type logger_dst() :: file:filename() | console | unknown.
--type logger_handler_info() :: #{
-    id := logger:handler_id(),
-    level := logger:level(),
-    dst := logger_dst(),
-    filters := [{logger:filter_id(), logger:filter()}],
-    status := started | stopped
-}.
+-export([ start_log_handler/1
+        , stop_log_handler/1
+        ]).
+
+-type(peername_str() :: list()).
+-type(logger_dst() :: file:filename() | console | unknown).
+-type(logger_handler_info() :: #{
+        id := logger:handler_id(),
+        level := logger:level(),
+        dst := logger_dst(),
+        filters := [{logger:filter_id(), logger:filter()}],
+        status := started | stopped
+      }).
 
 -define(STOPPED_HANDLERS, {?MODULE, stopped_handlers}).
 
@@ -142,7 +141,11 @@ set_metadata_clientid(<<>>) ->
 set_metadata_clientid(ClientId) ->
     set_proc_metadata(#{clientid => ClientId}).
 
--spec set_metadata_peername(peername_str()) -> ok.
+-spec(set_metadata_weight(emqx_types:weight()) -> ok).
+set_metadata_weight(Weight) ->
+    set_proc_metadata(#{weight => Weight}).
+
+-spec(set_metadata_peername(peername_str()) -> ok).
 set_metadata_peername(Peername) ->
     set_proc_metadata(#{peername => Peername}).
 

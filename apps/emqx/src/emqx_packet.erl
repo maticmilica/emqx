@@ -18,6 +18,8 @@
 
 -include("emqx.hrl").
 -include("emqx_mqtt.hrl").
+-include("logger.hrl").
+
 
 %% Header APIs
 -export([
@@ -152,6 +154,9 @@ info(username, #mqtt_packet_connect{username = Username}) ->
     Username;
 info(password, #mqtt_packet_connect{password = Password}) ->
     Password;
+info(weight, #mqtt_packet_connect{weight = Weight}) ->
+    Weight;
+
 info(ack_flags, #mqtt_packet_connack{ack_flags = Flags}) ->
     Flags;
 info(reason_code, #mqtt_packet_connack{reason_code = RC}) ->
@@ -253,7 +258,15 @@ check(#mqtt_packet_publish{topic_name = <<>>, properties = #{}}) ->
     {error, ?RC_PROTOCOL_ERROR};
 check(#mqtt_packet_publish{topic_name = TopicName, properties = Props}) ->
     try emqx_topic:validate(name, TopicName) of
-        true -> check_pub_props(Props)
+        true -> 
+            %A = lists:member(updateinfo_table2,ets:all()),
+            %if A ->
+            %    [{_, IsUpdate}] = ets:lookup(updateinfo_table2, updateweighttopic),
+            %    check_pub_props(Props),
+            %    {ok, IsUpdate};
+            %true ->
+                check_pub_props(Props)
+            %end            
     catch
         error:_Error ->
             {error, ?RC_TOPIC_NAME_INVALID}
@@ -507,13 +520,14 @@ format_variable(
         will_topic = WillTopic,
         will_payload = WillPayload,
         username = Username,
-        password = Password
+        password = Password,
+        weight = Weight
     },
     PayloadEncode
 ) ->
     Base = io_lib:format(
-        "ClientId=~ts, ProtoName=~ts, ProtoVsn=~p, CleanStart=~ts, KeepAlive=~p, Username=~ts, Password=~ts",
-        [ClientId, ProtoName, ProtoVer, CleanStart, KeepAlive, Username, format_password(Password)]
+        "ClientId=~ts, ProtoName=~ts, ProtoVsn=~p, CleanStart=~ts, KeepAlive=~p, Username=~ts, Password=~ts, Weight=~p",
+        [ClientId, ProtoName, ProtoVer, CleanStart, KeepAlive, Username, format_password(Password), Weight]
     ),
     case WillFlag of
         true ->
