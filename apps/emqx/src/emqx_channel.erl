@@ -424,7 +424,7 @@ handle_in(?PACKET(_), Channel = #channel{conn_state = ConnState}) when
 ->
     handle_out(disconnect, ?RC_PROTOCOL_ERROR, Channel);
 handle_in(Packet = ?PUBLISH_PACKET(_QoS), Channel) ->
-    ?SLOG(debug, "RECV PUBLISH ~s", [emqx_packet:format(Packet)]),
+    ?SLOG(debug, #{msg => "RECV PUBLISH", packet => [emqx_packet:format(Packet)]}),
     case emqx_packet:check(Packet) of
         ok -> process_publish(Packet, Channel);
         {error, ReasonCode} -> handle_out(disconnect, ReasonCode, Channel)
